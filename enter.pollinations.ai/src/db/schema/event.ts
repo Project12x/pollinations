@@ -35,6 +35,7 @@ export type TinybirdEvent = {
     apiKeyCreatedVia?: string;
     apiKeyCreatedForApp?: string;
     apiKeyCreatedForUserId?: string;
+    apiKeyClientId?: string;
 
     // Meter
     selectedMeterId?: string;

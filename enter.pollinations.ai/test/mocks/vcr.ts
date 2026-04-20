@@ -74,6 +74,9 @@ async function getSnapshotHash(request: Request): Promise<string> {
             // Unknown model — hash stays request-only
         }
         hash.update(`${JSON.stringify(body.messages)}`);
+        // Embeddings requests use input/dimensions instead of messages
+        if (body.input) hash.update(`${JSON.stringify(body.input)}`);
+        if (body.dimensions) hash.update(`${body.dimensions}`);
     } catch (error) {
         log.warn("Failed to parse request body: {error}", { error });
     }

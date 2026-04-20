@@ -1,7 +1,11 @@
 import type { PriceDefinition, Usage } from "@shared/registry/registry.ts";
 import type { ContentFilterResult } from "@/schemas/openai";
 
-export type EventType = "generate.text" | "generate.image" | "generate.audio";
+export type EventType =
+    | "generate.text"
+    | "generate.image"
+    | "generate.audio"
+    | "generate.embedding";
 export type ApiKeyType = "secret" | "publishable";
 
 // Plain TypeScript type for Tinybird events (no D1 table - events sent directly to Tinybird)
@@ -57,6 +61,7 @@ export type TinybirdEvent = {
     tokenPricePromptCached: number;
     tokenPricePromptAudio: number;
     tokenPricePromptImage: number;
+    tokenPricePromptVideo: number;
     tokenPriceCompletionText: number;
     tokenPriceCompletionReasoning: number;
     tokenPriceCompletionAudio: number;
@@ -69,6 +74,7 @@ export type TinybirdEvent = {
     tokenCountPromptAudio: number;
     tokenCountPromptCached: number;
     tokenCountPromptImage: number;
+    tokenCountPromptVideo: number;
     tokenCountCompletionText: number;
     tokenCountCompletionReasoning: number;
     tokenCountCompletionAudio: number;
@@ -116,6 +122,7 @@ export type GenerationEventPriceParams = {
     tokenPricePromptCached: number;
     tokenPricePromptAudio: number;
     tokenPricePromptImage: number;
+    tokenPricePromptVideo: number;
     tokenPriceCompletionText: number;
     tokenPriceCompletionReasoning: number;
     tokenPriceCompletionAudio: number;
@@ -129,6 +136,7 @@ export type GenerationEventUsageParams = {
     tokenCountPromptCached: number;
     tokenCountPromptAudio: number;
     tokenCountPromptImage: number;
+    tokenCountPromptVideo: number;
     tokenCountCompletionText: number;
     tokenCountCompletionReasoning: number;
     tokenCountCompletionAudio: number;
@@ -149,8 +157,10 @@ export function priceToEventParams(
             priceDefinition?.promptCachedTokens || 0,
         tokenPricePromptAudio: 
             priceDefinition?.promptAudioTokens || 0,
-        tokenPricePromptImage: 
+        tokenPricePromptImage:
             priceDefinition?.promptImageTokens || 0,
+        tokenPricePromptVideo:
+            priceDefinition?.promptVideoTokens || 0,
         tokenPriceCompletionText:
             priceDefinition?.completionTextTokens || 0,
         tokenPriceCompletionReasoning:
@@ -172,6 +182,7 @@ export function usageToEventParams(usage?: Usage): GenerationEventUsageParams {
         tokenCountPromptCached: usage?.promptCachedTokens || 0,
         tokenCountPromptAudio: usage?.promptAudioTokens || 0,
         tokenCountPromptImage: usage?.promptImageTokens || 0,
+        tokenCountPromptVideo: usage?.promptVideoTokens || 0,
         tokenCountCompletionText: usage?.completionTextTokens || 0,
         tokenCountCompletionReasoning: usage?.completionReasoningTokens || 0,
         tokenCountCompletionAudio: usage?.completionAudioTokens || 0,

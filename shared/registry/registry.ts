@@ -5,6 +5,11 @@ import {
     type AudioModelName,
 } from "./audio";
 import {
+    EMBEDDING_SERVICES,
+    type EmbeddingModelId,
+    type EmbeddingServiceId,
+} from "./embeddings";
+import {
     IMAGE_SERVICES,
     type ImageModelId,
     type ImageModelName,
@@ -19,6 +24,7 @@ export type UsageType =
     | "promptAudioTokens"
     | "promptAudioSeconds"
     | "promptImageTokens"
+    | "promptVideoTokens"
     | "completionTextTokens"
     | "completionReasoningTokens"
     | "completionAudioTokens"
@@ -49,8 +55,20 @@ export type CostDefinition = {
 // usage keys as the cost definition at the same date (enforced at registry build).
 export type PriceDefinition = CostDefinition;
 
-export type ModelId = ImageModelId | TextModelId | AudioModelId;
-export type ModelName = ImageModelName | TextModelName | AudioModelName;
+export type ModelId =
+    | ImageModelId
+    | TextModelId
+    | AudioModelId
+    | EmbeddingModelId;
+export type ModelName =
+    | ImageModelName
+    | TextModelName
+    | AudioModelName
+    | EmbeddingServiceId;
+
+/** Alias kept for backward compatibility with embeddings.ts */
+export type ServiceDefinition<TModelId extends string = ModelId> =
+    ModelDefinition<TModelId>;
 
 export type ModelDefinition<TModelId extends string = ModelId> = {
     aliases: string[];
@@ -147,6 +165,7 @@ const MODEL_REGISTRY = Object.fromEntries(
         ...TEXT_SERVICES,
         ...IMAGE_SERVICES,
         ...AUDIO_SERVICES,
+        ...EMBEDDING_SERVICES,
     }).map(([name, service]) => {
         const cost = sortDefinitions([...service.cost]);
         const explicitPrice = (service as ModelDefinition).price;
@@ -213,6 +232,13 @@ export function getAudioModels(): AudioModelName[] {
     return Object.keys(AUDIO_SERVICES) as AudioModelName[];
 }
 
+/**
+ * Get embedding model names (service IDs)
+ */
+export function getEmbeddingModels(): EmbeddingServiceId[] {
+    return Object.keys(EMBEDDING_SERVICES) as EmbeddingServiceId[];
+}
+
 function filterVisible<TModelName extends ModelName>(
     ids: TModelName[],
 ): TModelName[] {
@@ -222,6 +248,8 @@ function filterVisible<TModelName extends ModelName>(
 export const getVisibleTextModels = () => filterVisible(getTextModels());
 export const getVisibleImageModels = () => filterVisible(getImageModels());
 export const getVisibleAudioModels = () => filterVisible(getAudioModels());
+export const getVisibleEmbeddingServices = () =>
+    filterVisible(getEmbeddingModels());
 
 /**
  * Get a model definition by public model name
@@ -232,6 +260,13 @@ export function getModelDefinition(model: ModelName): ModelRegistryEntry {
         throw new Error(`Invalid model: "${model}"`);
     }
     return definition;
+}
+
+/**
+ * Get a service definition by service ID (alias for getModelDefinition, used by embeddings routes)
+ */
+export function getServiceDefinition(id: ModelName): ModelRegistryEntry {
+    return getModelDefinition(id);
 }
 
 /**

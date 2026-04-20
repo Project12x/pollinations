@@ -64,6 +64,9 @@ describe("POST /generate/v1/embeddings (authenticated)", () => {
             expect(data.model).toBe(TEST_EMBEDDING_MODEL);
             expect(data.usage.prompt_tokens).toBeGreaterThan(0);
             expect(data.usage.total_tokens).toBe(data.usage.prompt_tokens);
+            expect(response.headers.get("x-model-used")).toBe(
+                TEST_EMBEDDING_MODEL,
+            );
 
             await waitOnExecutionContext(ctx);
 
@@ -129,6 +132,32 @@ describe("POST /generate/v1/embeddings (authenticated)", () => {
             expect(data.data).toHaveLength(2);
             expect(data.data[0].index).toBe(0);
             expect(data.data[1].index).toBe(1);
+        },
+    );
+
+    test(
+        "rejects models that do not support embeddings",
+        { timeout: 10000 },
+        async ({ apiKey, mocks }) => {
+            await mocks.enable("polar", "tinybird");
+            const response = await SELF.fetch(EMBEDDINGS_ENDPOINT, {
+                method: "POST",
+                headers: {
+                    "content-type": "application/json",
+                    authorization: `Bearer ${apiKey}`,
+                },
+                body: buildEmbeddingsBody({ model: "flux" }),
+            });
+            const body = await response.text();
+            expect(response.status).toBe(400);
+
+            const error = JSON.parse(body) as {
+                error: { message: string };
+            };
+            expect(error.error.message).toContain(
+                "does not support embeddings",
+            );
+            expect(error.error.message).toContain("flux");
         },
     );
 });

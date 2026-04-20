@@ -559,6 +559,11 @@ export const proxyRoutes = new Hono<Env>()
             const requestBody = await c.req.json();
             const serviceId = c.var.model.resolved;
             const serviceDef = getServiceDefinition(serviceId);
+            if (!serviceDef.outputModalities?.includes("embedding")) {
+                throw new HTTPException(400, {
+                    message: `Model "${c.var.model.requested}" does not support embeddings.`,
+                });
+            }
             requestBody.model = serviceDef.modelId;
             await checkBalance(c.var, c.env);
 
@@ -585,6 +590,7 @@ export const proxyRoutes = new Hono<Env>()
             }
 
             const headers = new Headers(response.headers);
+            headers.set("x-model-used", serviceId);
             const contentType = headers.get("content-type") || "";
 
             if (!contentType.includes("application/json")) {

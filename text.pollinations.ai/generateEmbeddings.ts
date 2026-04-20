@@ -1,3 +1,5 @@
+import { lookup } from "node:dns/promises";
+import { isIP } from "node:net";
 import type { Usage } from "../shared/registry/registry.ts";
 import { buildUsageHeaders } from "../shared/registry/usage-headers.ts";
 import googleCloudAuth from "./auth/googleCloudAuth.ts";
@@ -5,30 +7,132 @@ import googleCloudAuth from "./auth/googleCloudAuth.ts";
 const GOOGLE_PROJECT_ID = process.env.GOOGLE_PROJECT_ID;
 const VERTEX_REGION = "us-central1";
 
-const MAX_MEDIA_SIZE = 20 * 1024 * 1024; // 20MB max for fetched media (images/videos)
+const MAX_MEDIA_SIZE = 20 * 1024 * 1024; // 20MB max per media item
+
+export class EmbeddingInputError extends Error {
+    readonly status = 400;
+}
 
 /**
  * Block internal/metadata URLs to prevent SSRF.
  * Throws if the URL points to a private or internal network address.
  */
-function assertPublicUrl(url: string): URL {
+function isPrivateIpv4Address(address: string): boolean {
+    const octets = address
+        .split(".")
+        .map((octet) => Number.parseInt(octet, 10));
+    if (octets.length !== 4 || octets.some(Number.isNaN)) {
+        return false;
+    }
+    const [a, b] = octets;
+    return (
+        a === 0 ||
+        a === 10 ||
+        a === 127 ||
+        (a === 169 && b === 254) ||
+        (a === 172 && b >= 16 && b <= 31) ||
+        (a === 192 && b === 168)
+    );
+}
+
+function isPrivateIpv6Address(address: string): boolean {
+    const normalized = address.toLowerCase().split("%", 2)[0];
+    if (normalized === "::1") {
+        return true;
+    }
+    if (normalized.startsWith("::ffff:")) {
+        return isPrivateIpv4Address(normalized.slice(7));
+    }
+    if (normalized.startsWith("fc") || normalized.startsWith("fd")) {
+        return true;
+    }
+    if (normalized.startsWith("fe")) {
+        const firstHextet = Number.parseInt(normalized.slice(0, 4), 16);
+        return (
+            !Number.isNaN(firstHextet) &&
+            firstHextet >= 0xfe80 &&
+            firstHextet <= 0xfebf
+        );
+    }
+    return false;
+}
+
+function isPrivateIpAddress(address: string): boolean {
+    const version = isIP(address);
+    if (version === 4) {
+        return isPrivateIpv4Address(address);
+    }
+    if (version === 6) {
+        return isPrivateIpv6Address(address);
+    }
+    return false;
+}
+
+function assertMediaSize(label: string, byteLength: number): void {
+    if (byteLength > MAX_MEDIA_SIZE) {
+        throw new EmbeddingInputError(
+            `${label} too large: ${byteLength} bytes (max ${MAX_MEDIA_SIZE})`,
+        );
+    }
+}
+
+function parseDataUrl(
+    dataUrl: string,
+    label: string,
+): { mimeType: string; data: string } {
+    const [meta, payload] = dataUrl.split(",", 2);
+    if (!meta?.startsWith("data:") || !payload) {
+        throw new EmbeddingInputError(
+            `Invalid ${label.toLowerCase()} data URL`,
+        );
+    }
+
+    const mimeType =
+        meta.slice(5).split(";", 1)[0] || "application/octet-stream";
+    const isBase64 = meta.includes(";base64");
+    const buffer = isBase64
+        ? Buffer.from(payload, "base64")
+        : Buffer.from(decodeURIComponent(payload), "utf8");
+
+    assertMediaSize(label, buffer.byteLength);
+    return { mimeType, data: buffer.toString("base64") };
+}
+
+function assertBase64MediaSize(label: string, data: string): void {
+    const buffer = Buffer.from(data.replace(/\s+/g, ""), "base64");
+    assertMediaSize(label, buffer.byteLength);
+}
+
+async function assertPublicUrl(url: string): Promise<URL> {
     const parsed = new URL(url);
-    const h = parsed.hostname;
-    if (
-        h === "localhost" ||
-        h === "::1" ||
-        h === "0.0.0.0" ||
-        h.startsWith("127.") ||
-        h.startsWith("10.") ||
-        h.startsWith("192.168.") ||
-        h.startsWith("169.254.") ||
-        h === "metadata.google.internal" ||
-        /^172\.(1[6-9]|2\d|3[01])\./.test(h) ||
-        /^f[cd]/i.test(h) || // IPv6 ULA fc00::/7
-        /^fe[89ab]/i.test(h) || // IPv6 link-local fe80::/10
-        /^::ffff:/i.test(h) // IPv4-mapped IPv6
-    ) {
-        throw new Error(`Blocked request to private/internal URL: ${h}`);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+        throw new EmbeddingInputError(
+            `Unsupported media URL protocol: ${parsed.protocol}`,
+        );
+    }
+
+    const addresses =
+        isIP(parsed.hostname) > 0
+            ? [parsed.hostname]
+            : (
+                  await lookup(parsed.hostname, {
+                      all: true,
+                      verbatim: true,
+                  })
+              ).map(({ address }) => address);
+
+    if (addresses.length === 0) {
+        throw new EmbeddingInputError(
+            `Failed to resolve public media URL: ${parsed.hostname}`,
+        );
+    }
+
+    for (const address of addresses) {
+        if (isPrivateIpAddress(address)) {
+            throw new EmbeddingInputError(
+                `Blocked request to private/internal URL: ${parsed.hostname} -> ${address}`,
+            );
+        }
     }
     return parsed;
 }
@@ -41,20 +145,16 @@ async function fetchMedia(
     url: string,
     label: string,
 ): Promise<{ buffer: ArrayBuffer; contentType: string }> {
-    assertPublicUrl(url);
-    const response = await fetch(url, { signal: AbortSignal.timeout(30_000) });
+    const parsedUrl = await assertPublicUrl(url);
+    const response = await fetch(parsedUrl, {
+        signal: AbortSignal.timeout(30_000),
+    });
     const cl = parseInt(response.headers.get("content-length") || "0", 10);
-    if (cl > MAX_MEDIA_SIZE) {
-        throw new Error(
-            `${label} too large: ${cl} bytes (max ${MAX_MEDIA_SIZE})`,
-        );
+    if (Number.isFinite(cl)) {
+        assertMediaSize(label, cl);
     }
     const buffer = await response.arrayBuffer();
-    if (buffer.byteLength > MAX_MEDIA_SIZE) {
-        throw new Error(
-            `${label} too large: ${buffer.byteLength} bytes (max ${MAX_MEDIA_SIZE})`,
-        );
-    }
+    assertMediaSize(label, buffer.byteLength);
     const contentType =
         response.headers.get("content-type") || "application/octet-stream";
     return { buffer, contentType };
@@ -175,8 +275,7 @@ async function inputToGeminiParts(
         } else if (part.type === "image_url") {
             const { url } = part.image_url;
             if (url.startsWith("data:")) {
-                const [meta, data] = url.split(",", 2);
-                const mimeType = meta.split(":")[1].split(";")[0];
+                const { mimeType, data } = parseDataUrl(url, "Image");
                 parts.push({ inline_data: { mime_type: mimeType, data } });
             } else {
                 const { buffer, contentType } = await fetchMedia(url, "Image");
@@ -186,6 +285,7 @@ async function inputToGeminiParts(
                 });
             }
         } else if (part.type === "input_audio") {
+            assertBase64MediaSize("Audio", part.input_audio.data);
             const mimeType = `audio/${part.input_audio.format || "mp3"}`;
             parts.push({
                 inline_data: {
@@ -196,9 +296,13 @@ async function inputToGeminiParts(
         } else if (part.type === "video_url") {
             const { url, mime_type } = part.video_url;
             if (url.startsWith("data:")) {
-                const [meta, data] = url.split(",", 2);
-                const mimeType = mime_type || meta.split(":")[1].split(";")[0];
-                parts.push({ inline_data: { mime_type: mimeType, data } });
+                const parsedVideo = parseDataUrl(url, "Video");
+                parts.push({
+                    inline_data: {
+                        mime_type: mime_type || parsedVideo.mimeType,
+                        data: parsedVideo.data,
+                    },
+                });
             } else {
                 const { buffer, contentType } = await fetchMedia(url, "Video");
                 const base64 = Buffer.from(buffer).toString("base64");

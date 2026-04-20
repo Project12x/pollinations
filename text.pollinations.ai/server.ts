@@ -17,7 +17,10 @@ import {
     openaiUsageToUsage,
 } from "../shared/registry/usage-headers.ts";
 import { availableModels, findModelByName } from "./availableModels.js";
-import { generateEmbeddings } from "./generateEmbeddings.ts";
+import {
+    EmbeddingInputError,
+    generateEmbeddings,
+} from "./generateEmbeddings.ts";
 import { generateTextPortkey } from "./generateTextPortkey.js";
 import { type ExpressLikeRequest, getRequestData } from "./requestUtils.js";
 import type { ChatCompletion, RequestData, ServiceError } from "./types.js";
@@ -504,13 +507,27 @@ app.post("/v1/chat/completions", async (c) => {
 
 // Embeddings endpoint
 app.post("/embeddings", async (c) => {
-    const body = await c.req.json();
-    return generateEmbeddings(body);
+    try {
+        const body = await c.req.json();
+        return await generateEmbeddings(body);
+    } catch (error) {
+        if (error instanceof EmbeddingInputError) {
+            return c.json({ error: error.message }, error.status);
+        }
+        throw error;
+    }
 });
 
 app.post("/v1/embeddings", async (c) => {
-    const body = await c.req.json();
-    return generateEmbeddings(body);
+    try {
+        const body = await c.req.json();
+        return await generateEmbeddings(body);
+    } catch (error) {
+        if (error instanceof EmbeddingInputError) {
+            return c.json({ error: error.message }, error.status);
+        }
+        throw error;
+    }
 });
 
 app.get("/*", async (c) => {

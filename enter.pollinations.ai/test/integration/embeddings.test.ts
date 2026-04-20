@@ -1,25 +1,47 @@
-import { SELF } from "cloudflare:test";
+import {
+    createExecutionContext,
+    env,
+    SELF,
+    waitOnExecutionContext,
+} from "cloudflare:test";
+import type { ModelName } from "@shared/registry/registry.ts";
 import { describe, expect } from "vitest";
+import worker from "@/index.ts";
 import { test } from "../fixtures.ts";
+import { assertTrackedBillingEvent } from "../helpers/billing-assertions.ts";
 
-describe("Embeddings", () => {
+const EMBEDDINGS_ENDPOINT = "http://localhost:3000/api/generate/v1/embeddings";
+const EMBEDDING_MODELS_ENDPOINT =
+    "http://localhost:3000/api/generate/embeddings/models";
+const TEST_EMBEDDING_MODEL = "gemini-embedding-2";
+const TEST_EMBEDDING_INPUT = "Hello world";
+
+function buildEmbeddingsBody(extra: Record<string, unknown> = {}) {
+    return JSON.stringify({
+        model: TEST_EMBEDDING_MODEL,
+        input: TEST_EMBEDDING_INPUT,
+        ...extra,
+    });
+}
+
+describe("POST /generate/v1/embeddings (authenticated)", () => {
     test(
-        "POST /v1/embeddings returns OpenAI-compatible response",
+        "returns an OpenAI-compatible response and tracks billing",
         { timeout: 30000 },
         async ({ apiKey, mocks }) => {
             await mocks.enable("polar", "tinybird", "vcr");
-            const response = await SELF.fetch(
-                "http://localhost:3000/api/generate/v1/embeddings",
-                {
+            const ctx = createExecutionContext();
+            const response = await worker.fetch(
+                new Request(EMBEDDINGS_ENDPOINT, {
                     method: "POST",
                     headers: {
                         "content-type": "application/json",
-                        "authorization": `Bearer ${apiKey}`,
+                        authorization: `Bearer ${apiKey}`,
                     },
-                    body: JSON.stringify({
-                        input: "Hello world",
-                    }),
-                },
+                    body: buildEmbeddingsBody(),
+                }),
+                env,
+                ctx,
             );
             const body = await response.text();
             expect(
@@ -39,29 +61,36 @@ describe("Embeddings", () => {
             expect(data.data[0].embedding).toBeInstanceOf(Array);
             expect(data.data[0].embedding.length).toBeGreaterThan(0);
             expect(data.data[0].index).toBe(0);
+            expect(data.model).toBe(TEST_EMBEDDING_MODEL);
             expect(data.usage.prompt_tokens).toBeGreaterThan(0);
+            expect(data.usage.total_tokens).toBe(data.usage.prompt_tokens);
+
+            await waitOnExecutionContext(ctx);
+
+            const events = mocks.tinybird.state.events;
+            expect(events).toHaveLength(1);
+            expect(events[0].tokenCountPromptText).toBeGreaterThan(0);
+            expect(events[0].tokenCountCompletionText).toBe(0);
+            assertTrackedBillingEvent(
+                events[0],
+                TEST_EMBEDDING_MODEL as ModelName,
+            );
         },
     );
 
     test(
-        "POST /v1/embeddings supports custom dimensions",
+        "supports custom dimensions",
         { timeout: 30000 },
         async ({ apiKey, mocks }) => {
             await mocks.enable("polar", "tinybird", "vcr");
-            const response = await SELF.fetch(
-                "http://localhost:3000/api/generate/v1/embeddings",
-                {
-                    method: "POST",
-                    headers: {
-                        "content-type": "application/json",
-                        "authorization": `Bearer ${apiKey}`,
-                    },
-                    body: JSON.stringify({
-                        input: "Hello world",
-                        dimensions: 768,
-                    }),
+            const response = await SELF.fetch(EMBEDDINGS_ENDPOINT, {
+                method: "POST",
+                headers: {
+                    "content-type": "application/json",
+                    authorization: `Bearer ${apiKey}`,
                 },
-            );
+                body: buildEmbeddingsBody({ dimensions: 768 }),
+            });
             const body = await response.text();
             expect(
                 response.status,
@@ -76,23 +105,18 @@ describe("Embeddings", () => {
     );
 
     test(
-        "POST /v1/embeddings supports batch input",
+        "supports batch input",
         { timeout: 30000 },
         async ({ apiKey, mocks }) => {
             await mocks.enable("polar", "tinybird", "vcr");
-            const response = await SELF.fetch(
-                "http://localhost:3000/api/generate/v1/embeddings",
-                {
-                    method: "POST",
-                    headers: {
-                        "content-type": "application/json",
-                        "authorization": `Bearer ${apiKey}`,
-                    },
-                    body: JSON.stringify({
-                        input: ["Hello", "World"],
-                    }),
+            const response = await SELF.fetch(EMBEDDINGS_ENDPOINT, {
+                method: "POST",
+                headers: {
+                    "content-type": "application/json",
+                    authorization: `Bearer ${apiKey}`,
                 },
-            );
+                body: buildEmbeddingsBody({ input: ["Hello", "World"] }),
+            });
             const body = await response.text();
             expect(
                 response.status,
@@ -107,37 +131,35 @@ describe("Embeddings", () => {
             expect(data.data[1].index).toBe(1);
         },
     );
+});
 
+describe("POST /generate/v1/embeddings (unauthenticated)", () => {
     test(
-        "POST /v1/embeddings rejects unauthenticated requests",
+        "rejects unauthenticated requests",
         { timeout: 10000 },
         async ({ mocks }) => {
             await mocks.enable("polar", "tinybird");
-            const response = await SELF.fetch(
-                "http://localhost:3000/api/generate/v1/embeddings",
-                {
-                    method: "POST",
-                    headers: {
-                        "content-type": "application/json",
-                    },
-                    body: JSON.stringify({
-                        input: "Hello world",
-                    }),
+            const response = await SELF.fetch(EMBEDDINGS_ENDPOINT, {
+                method: "POST",
+                headers: {
+                    "content-type": "application/json",
                 },
-            );
+                body: buildEmbeddingsBody(),
+            });
             expect(response.status).toBe(401);
         },
     );
+});
 
+describe("GET /embeddings/models", () => {
     test(
-        "GET /embeddings/models returns model list",
+        "returns the public embeddings model list",
         { timeout: 10000 },
         async ({ mocks }) => {
             await mocks.enable("polar", "tinybird");
-            const response = await SELF.fetch(
-                "http://localhost:3000/api/generate/embeddings/models",
-                { method: "GET" },
-            );
+            const response = await SELF.fetch(EMBEDDING_MODELS_ENDPOINT, {
+                method: "GET",
+            });
             expect(response.status).toBe(200);
 
             const data = (await response.json()) as {
@@ -146,7 +168,7 @@ describe("Embeddings", () => {
             };
             expect(data.object).toBe("list");
             expect(data.data.length).toBeGreaterThan(0);
-            expect(data.data[0].id).toBe("gemini-embedding-2");
+            expect(data.data[0].id).toBe(TEST_EMBEDDING_MODEL);
             expect(data.data[0].object).toBe("model");
         },
     );

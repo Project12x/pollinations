@@ -33,6 +33,12 @@ export default defineWorkersConfig(async ({ mode }) => {
                             TEST_MIGRATIONS: migrations,
                             TEST_VCR_MODE:
                                 env.TEST_VCR_MODE || "replay-or-record",
+                            ...(env.TEXT_SERVICE_URL
+                                ? { TEXT_SERVICE_URL: env.TEXT_SERVICE_URL }
+                                : {}),
+                            ...(env.IMAGE_SERVICE_URL
+                                ? { IMAGE_SERVICE_URL: env.IMAGE_SERVICE_URL }
+                                : {}),
                         },
                     },
                 },

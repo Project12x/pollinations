@@ -584,8 +584,23 @@ export const proxyRoutes = new Hono<Env>()
                 });
             }
 
-            return new Response(response.body, {
-                headers: Object.fromEntries(response.headers),
+            const headers = new Headers(response.headers);
+            const contentType = headers.get("content-type") || "";
+
+            if (!contentType.includes("application/json")) {
+                return new Response(response.body, {
+                    headers: Object.fromEntries(headers),
+                });
+            }
+
+            const responseBody = (await response.json()) as {
+                model?: string;
+            };
+            responseBody.model = serviceId;
+            headers.delete("content-length");
+
+            return new Response(JSON.stringify(responseBody), {
+                headers: Object.fromEntries(headers),
             });
         },
     )

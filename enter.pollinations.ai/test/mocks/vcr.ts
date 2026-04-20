@@ -52,12 +52,21 @@ const hosts = [
     { name: "image", host: new URL(env.IMAGE_SERVICE_URL).host },
 ];
 
+function getCanonicalRequestTarget(request: Request): string {
+    const url = new URL(request.url);
+    const matchingHost = hosts.find(({ host }) => host === url.host)?.name;
+    if (!matchingHost) {
+        return request.url;
+    }
+    return `${matchingHost}:${url.pathname}${url.search}`;
+}
+
 async function getSnapshotHash(request: Request): Promise<string> {
     const hash = crypto.createHash("md5");
     // Exclude authorization header — it changes per test run and doesn't affect
     // backend response content. This allows VCR snapshots to be reused across runs.
     hash.update(request.headers.get("content-type") || "");
-    hash.update(`${request.method}:${request.url}`);
+    hash.update(`${request.method}:${getCanonicalRequestTarget(request)}`);
     try {
         const text = await request.clone().text();
         const body = JSON.parse(text || "{}");
@@ -141,7 +150,7 @@ export function createMockVcr(originalFetch: typeof fetch): MockAPI<{}> {
                 try {
                     const snapshot = await getSnapshot(snapshotFilename);
                     return replaySnapshotResponse(snapshot);
-                } catch (error: any) {
+                } catch {
                     log.warn(`Missing snapshot: ${snapshotFilename}`);
                 }
             }

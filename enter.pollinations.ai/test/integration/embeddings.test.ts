@@ -15,6 +15,7 @@ const EMBEDDING_MODELS_ENDPOINT =
     "http://localhost:3000/api/generate/embeddings/models";
 const TEST_EMBEDDING_MODEL = "gemini-embedding-2";
 const TEST_EMBEDDING_INPUT = "Hello world";
+const MAX_MEDIA_SIZE = 20 * 1024 * 1024;
 
 function buildEmbeddingsBody(extra: Record<string, unknown> = {}) {
     return JSON.stringify({
@@ -158,6 +159,70 @@ describe("POST /generate/v1/embeddings (authenticated)", () => {
                 "does not support embeddings",
             );
             expect(error.error.message).toContain("flux");
+        },
+    );
+
+    test(
+        "blocks private media URLs",
+        { timeout: 10000 },
+        async ({ apiKey, mocks }) => {
+            await mocks.enable("polar", "tinybird", "text");
+            const response = await SELF.fetch(EMBEDDINGS_ENDPOINT, {
+                method: "POST",
+                headers: {
+                    "content-type": "application/json",
+                    authorization: `Bearer ${apiKey}`,
+                },
+                body: buildEmbeddingsBody({
+                    input: [
+                        {
+                            type: "image_url",
+                            image_url: { url: "http://127.0.0.1/test.png" },
+                        },
+                    ],
+                }),
+            });
+            const body = await response.text();
+            expect(response.status).toBe(400);
+
+            const error = JSON.parse(body) as {
+                error: { message: string };
+            };
+            expect(error.error.message).toContain(
+                "Blocked request to private/internal URL",
+            );
+            expect(error.error.message).toContain("127.0.0.1");
+        },
+    );
+
+    test(
+        "rejects oversized data URLs",
+        { timeout: 10000 },
+        async ({ apiKey, mocks }) => {
+            await mocks.enable("polar", "tinybird", "text");
+            const oversizedDataUrl = `data:image/png,${"a".repeat(MAX_MEDIA_SIZE + 1)}`;
+            const response = await SELF.fetch(EMBEDDINGS_ENDPOINT, {
+                method: "POST",
+                headers: {
+                    "content-type": "application/json",
+                    authorization: `Bearer ${apiKey}`,
+                },
+                body: buildEmbeddingsBody({
+                    input: [
+                        {
+                            type: "image_url",
+                            image_url: { url: oversizedDataUrl },
+                        },
+                    ],
+                }),
+            });
+            const body = await response.text();
+            expect(response.status).toBe(400);
+
+            const error = JSON.parse(body) as {
+                error: { message: string };
+            };
+            expect(error.error.message).toContain("Image too large");
         },
     );
 });

@@ -90,9 +90,18 @@ function parseDataUrl(
     const mimeType =
         meta.slice(5).split(";", 1)[0] || "application/octet-stream";
     const isBase64 = meta.includes(";base64");
-    const buffer = isBase64
-        ? Buffer.from(payload, "base64")
-        : Buffer.from(decodeURIComponent(payload), "utf8");
+    let buffer: Buffer;
+    if (isBase64) {
+        buffer = Buffer.from(payload, "base64");
+    } else {
+        try {
+            buffer = Buffer.from(decodeURIComponent(payload), "utf8");
+        } catch {
+            throw new EmbeddingInputError(
+                `Invalid ${label.toLowerCase()} data URL`,
+            );
+        }
+    }
 
     assertMediaSize(label, buffer.byteLength);
     return { mimeType, data: buffer.toString("base64") };

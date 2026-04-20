@@ -47,26 +47,63 @@ type Snapshot = {
     response: ResponseSnapshot;
 };
 
+type HostAlias = {
+    name: string;
+    host: string;
+};
+
+const HISTORICAL_SERVICE_HOSTS = {
+    text: ["localhost:16385", "ec2-3-80-56-235.compute-1.amazonaws.com:16385"],
+    image: ["localhost:16384"],
+} as const satisfies Record<string, string[]>;
+
+function getConfiguredHost(
+    name: string,
+    url: string | undefined,
+): HostAlias | null {
+    if (!url) {
+        return null;
+    }
+
+    try {
+        return { name, host: new URL(url).host };
+    } catch (error) {
+        log.warn("Ignoring invalid VCR host for {name}: {url}", {
+            name,
+            url,
+            error,
+        });
+        return null;
+    }
+}
+
 const hosts = [
-    { name: "text", host: new URL(env.TEXT_SERVICE_URL).host },
-    { name: "image", host: new URL(env.IMAGE_SERVICE_URL).host },
-];
+    getConfiguredHost("text", env.TEXT_SERVICE_URL),
+    getConfiguredHost("image", env.IMAGE_SERVICE_URL),
+].filter((host): host is HostAlias => host !== null);
+
+function getHostAlias(url: URL): string | undefined {
+    return hosts.find(({ host }) => host === url.host)?.name;
+}
 
 function getCanonicalRequestTarget(request: Request): string {
     const url = new URL(request.url);
-    const matchingHost = hosts.find(({ host }) => host === url.host)?.name;
+    const matchingHost = getHostAlias(url);
     if (!matchingHost) {
         return request.url;
     }
     return `${matchingHost}:${url.pathname}${url.search}`;
 }
 
-async function getSnapshotHash(request: Request): Promise<string> {
+async function getSnapshotHash(
+    request: Request,
+    requestTarget: string,
+): Promise<string> {
     const hash = crypto.createHash("md5");
     // Exclude authorization header — it changes per test run and doesn't affect
     // backend response content. This allows VCR snapshots to be reused across runs.
     hash.update(request.headers.get("content-type") || "");
-    hash.update(`${request.method}:${getCanonicalRequestTarget(request)}`);
+    hash.update(`${request.method}:${requestTarget}`);
     try {
         const text = await request.clone().text();
         const body = JSON.parse(text || "{}");
@@ -93,13 +130,13 @@ async function getSnapshotHash(request: Request): Promise<string> {
 }
 
 async function getSnapshotFilename(
-    hosts: { name: string; host: string }[],
     request: Request,
+    requestTarget: string,
 ): Promise<string> {
     const url = new URL(request.url);
-    const hash = await getSnapshotHash(request);
+    const hash = await getSnapshotHash(request, requestTarget);
 
-    const matchingHost = hosts.find(({ host }) => host === url.host)?.name;
+    const matchingHost = getHostAlias(url);
 
     const host =
         matchingHost ||
@@ -110,6 +147,35 @@ async function getSnapshotFilename(
             .replace(/^-+|-+$/g, "");
 
     return `${host}-${hash}.json`;
+}
+
+async function getSnapshotFilenames(request: Request): Promise<string[]> {
+    const canonicalTarget = getCanonicalRequestTarget(request);
+    const filenames = [await getSnapshotFilename(request, canonicalTarget)];
+
+    for (const legacyTarget of getLegacyRequestTargets(request)) {
+        filenames.push(await getSnapshotFilename(request, legacyTarget));
+    }
+
+    return [...new Set(filenames)];
+}
+
+function getLegacyRequestTargets(request: Request): string[] {
+    const url = new URL(request.url);
+    const matchingHost = getHostAlias(url);
+    const targets = [request.url];
+
+    if (!matchingHost) {
+        return targets;
+    }
+
+    for (const host of HISTORICAL_SERVICE_HOSTS[matchingHost] || []) {
+        const legacyUrl = new URL(request.url);
+        legacyUrl.host = host;
+        targets.push(legacyUrl.toString());
+    }
+
+    return [...new Set(targets)];
 }
 
 async function getSnapshot(filename: string): Promise<Snapshot> {
@@ -140,19 +206,30 @@ async function writeSnapshot(
 export function createMockVcr(originalFetch: typeof fetch): MockAPI<{}> {
     const vcr = new Hono()
         .all("*", async (c) => {
-            const snapshotFilename = await getSnapshotFilename(
-                hosts,
-                c.req.raw,
-            );
+            const snapshotFilenames = await getSnapshotFilenames(c.req.raw);
+            const primarySnapshotFilename = snapshotFilenames[0];
 
             if (env.TEST_VCR_MODE !== "record-only") {
                 // Replay snapshot if it exists
-                try {
-                    const snapshot = await getSnapshot(snapshotFilename);
-                    return replaySnapshotResponse(snapshot);
-                } catch {
-                    log.warn(`Missing snapshot: ${snapshotFilename}`);
+                for (const [
+                    index,
+                    snapshotFilename,
+                ] of snapshotFilenames.entries()) {
+                    try {
+                        const snapshot = await getSnapshot(snapshotFilename);
+                        if (index > 0) {
+                            log.trace(
+                                `Replaying legacy snapshot: ${snapshotFilename}`,
+                            );
+                        }
+                        return replaySnapshotResponse(snapshot);
+                    } catch {
+                        // Try the next candidate filename before falling back to record mode.
+                    }
                 }
+                log.warn(
+                    `Missing snapshot candidates: ${snapshotFilenames.join(", ")}`,
+                );
             }
 
             if (env.TEST_VCR_MODE !== "replay-only") {
@@ -166,7 +243,7 @@ export function createMockVcr(originalFetch: typeof fetch): MockAPI<{}> {
                     requestClone,
                     responseClone,
                 );
-                await writeSnapshot(snapshotFilename, snapshot);
+                await writeSnapshot(primarySnapshotFilename, snapshot);
                 return response;
             }
 
